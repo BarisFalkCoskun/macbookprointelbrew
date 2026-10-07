@@ -2,14 +2,17 @@
 
 # Intel (x86_64, macOS 15 Sequoia) bottle builder and client.
 #
-# The same file runs in two places, always under `brew ruby` so Homebrew's
-# PkgVersion and output helpers are loaded:
+# The same file runs in two places:
 #
 #   GitHub Actions runner:  brew ruby scripts/bottler.rb build [formula ...]
-#   MacBook (via ibrew):    brew ruby bottler.rb install|upgrade|reinstall [formula ...]
+#   MacBook (via ibrew):    <Homebrew's portable ruby> bottler.rb install|upgrade|reinstall [formula ...]
 #
-# `brew ruby` rejects unknown --flags and brew drops every env var not named
-# HOMEBREW_*, so options arrive as HOMEBREW_* env vars:
+# The MacBook avoids `brew ruby` because it is a developer command and running
+# it switches on Homebrew's developer mode for good (brew update then tracks
+# the unreleased main branch). Without Homebrew's libraries, small stand-ins
+# below replace PkgVersion and the ohai/opoo output helpers.
+#
+# Options are env vars named HOMEBREW_*, the only ones `brew ruby` passes through:
 #   HOMEBREW_IBREW_REPO              owner/repo holding the "bottles" release (required)
 #   HOMEBREW_IBREW_DRY_RUN=1         client: print the plan, change nothing
 #   HOMEBREW_IBREW_WAIT_MINUTES      client: how long to wait for remote builds (240)
@@ -25,8 +28,46 @@ require "open3"
 require "set"
 require "time"
 require "tmpdir"
-require "utils/output"
-include Utils::Output::Mixin
+
+if defined?(PkgVersion) # under `brew ruby` (the runner)
+  require "utils/output"
+  include Utils::Output::Mixin
+
+  def compare_pkg_versions(a, b) = PkgVersion.parse(a) <=> PkgVersion.parse(b)
+else # plain portable Ruby (the MacBook)
+  def paint(code, text) = $stderr.tty? ? "\e[#{code}m#{text}\e[0m" : text
+  def ohai(msg) = puts("#{paint("1;34", "==>")} #{paint(1, msg)}")
+  def opoo(msg) = warn("#{paint(33, "Warning")}: #{msg}")
+  def onoe(msg) = warn("#{paint(31, "Error")}: #{msg}")
+
+  def odie(msg)
+    onoe(msg)
+    exit 1
+  end
+
+  # Homebrew-style "version_revision" comparison: numeric parts compare as
+  # numbers, a trailing letter part is a pre-release ("1.0rc1" < "1.0").
+  def compare_pkg_versions(a, b)
+    (va, ra), (vb, rb) = [a, b].map { |s| s.match(/\A(.+?)(?:_(\d+))?\z/).captures }
+    ta = va.scan(/\d+|[a-z]+/i)
+    tb = vb.scan(/\d+|[a-z]+/i)
+    [ta.size, tb.size].max.times do |i|
+      x, y = ta[i], tb[i]
+      # A missing part counts as 0 ("9.1" == "9.1.0"), but is newer than a
+      # letter part ("1.0" > "1.0rc1").
+      x ||= y.match?(/\A\d/) ? "0" : (return 1)
+      y ||= x.match?(/\A\d/) ? "0" : (return -1)
+      next if x == y
+
+      xn, yn = x.match?(/\A\d/), y.match?(/\A\d/)
+      return (xn ? 1 : -1) if xn != yn
+      return xn ? x.to_i <=> y.to_i : x <=> y
+    end
+    ra.to_i <=> rb.to_i
+  end
+end
+
+def newer_or_equal?(a, b) = compare_pkg_versions(a, b) >= 0
 
 TAG = ENV.fetch("HOMEBREW_BOTTLER_TAG", "sequoia")
 # Bottles built for an older macOS still pour on Sequoia; "all" is arch-independent.
@@ -79,8 +120,6 @@ def read(*cmd, stdin: nil)
 
   out
 end
-
-def newer_or_equal?(a, b) = PkgVersion.parse(a) >= PkgVersion.parse(b)
 
 # --- Published bottles: assets + index.json on the "bottles" release --------
 
@@ -144,7 +183,7 @@ end
 # on the MacBook an up-to-date installed keg means there is nothing to do.
 def classify(info, index, client:, force: false)
   wanted = pkg_version(info)
-  installed = info["installed"].map { _1["version"] }.max_by { PkgVersion.parse(_1) }
+  installed = info["installed"].map { _1["version"] }.max { |a, b| compare_pkg_versions(a, b) }
   ours = index.dig("bottles", info["name"], "pkg_version")
   status =
     if client && !force && installed && newer_or_equal?(installed, wanted) then :current
@@ -346,8 +385,10 @@ end
 #   :brew    let brew compile it on this Mac
 #   :skip    leave it alone for now (anything that needs it is skipped too)
 def choose_source(entry)
-  # TODO(you): your speed-vs-waiting policy, about 5-10 lines.
-  raise NotImplementedError, "choose_source in bottler.rb is not written yet"
+  # Default policy: never compile on the MacBook. An older (:stale) bottle is
+  # not poured, because dependents built on the runner against the current
+  # version could fail to load against an older library.
+  entry.status == :ours ? :pour : :remote
 end
 
 def github_api(method, path, body = nil)
@@ -497,8 +538,14 @@ end
 
 command, *args = ARGV
 args.each { odie "invalid formula name: #{_1}" unless FORMULA_NAME.match?(_1) }
-case command
-when "build" then build(args)
-when "install", "upgrade", "reinstall" then client(command, args)
-else odie "usage: bottler.rb build|install|upgrade|reinstall [formula ...]"
+begin
+  case command
+  when "build" then build(args)
+  when "install", "upgrade", "reinstall" then client(command, args)
+  else odie "usage: bottler.rb build|install|upgrade|reinstall [formula ...]"
+  end
+rescue RuntimeError => e
+  odie e.message # brew has usually printed the details already
+rescue Interrupt
+  exit 130
 end

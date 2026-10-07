@@ -34,4 +34,7 @@ for arg in "$@"; do
   esac
 done
 
-exec brew ruby "$share/bottler.rb" "$cmd" ${names[@]+"${names[@]}"}
+# Homebrew's own portable Ruby, run directly: `brew ruby` would switch on
+# developer mode, which moves `brew update` to the unreleased main branch.
+ruby="$(brew --repository)/Library/Homebrew/vendor/portable-ruby/current/bin/ruby"
+exec "$ruby" "$share/bottler.rb" "$cmd" ${names[@]+"${names[@]}"}
