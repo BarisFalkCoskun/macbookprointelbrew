@@ -1,0 +1,72 @@
+name: build-bottles
+
+on:
+  schedule:
+    - cron: "23 2 * * *" # nightly: prebuild updates for everything in packages.txt
+  push:
+    branches: [main]
+    paths: [packages.txt]
+  workflow_dispatch:
+    inputs:
+      formulae:
+        description: Space-separated formulae to bottle (empty = packages.txt)
+        required: false
+        default: ""
+
+permissions:
+  contents: write # upload release assets
+  actions: write # re-dispatch itself when a run runs out of time
+
+# One run at a time, so index.json updates never race.
+concurrency:
+  group: bottles
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 355
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      FORMULAE: ${{ inputs.formulae }}
+      # brew only passes HOMEBREW_* into `brew ruby`; bottler.rb maps these back for gh.
+      HOMEBREW_IBREW_REPO: ${{ github.repository }}
+      HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_FROM_API: "1" # brew bottle needs the homebrew/core tap
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check runner matches the MacBook
+        run: |
+          sw_vers
+          test "$(uname -m)" = x86_64
+          test "$(brew --prefix)" = /usr/local
+
+      - name: Prepare Homebrew
+        run: |
+          brew update
+          brew tap --force homebrew/core
+
+      - name: Ensure the bottles release exists
+        run: |
+          gh release view bottles >/dev/null 2>&1 ||
+            gh release create bottles --latest=false --title "Intel bottles (sequoia)" \
+              --notes "x86_64 macOS 15 bottles built by build-bottles.yml. index.json lists them."
+
+      - name: Build bottles
+        run: |
+          set -f # formula names only; no globbing
+          brew ruby scripts/bottler.rb build $FORMULAE
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: brew-logs
+          path: ~/Library/Logs/Homebrew/
+          if-no-files-found: ignore

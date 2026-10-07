@@ -1,0 +1,19 @@
+# Formulae the nightly build keeps bottled (one per line; dependencies are
+# added automatically). Source on the MacBook:  brew leaves --installed-on-request
+# Not listed: casks (prebuilt apps) and mongodb/brew/mongodb-community
+# (MongoDB's tap ships its own prebuilt binaries; plain brew handles it).
+cmake
+exiftool
+git
+go
+mpv
+node@22
+nvm
+opencv
+postgresql@14
+rclone
+screen
+tmux
+tree
+vcpkg
+vim

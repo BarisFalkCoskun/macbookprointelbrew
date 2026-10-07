@@ -1,0 +1,37 @@
+#!/bin/bash
+# ibrew: brew, but install/upgrade/reinstall pour Intel bottles from your
+# build repo instead of compiling. Everything else goes straight to brew.
+#
+#   ibrew upgrade                 # all outdated formulae + casks
+#   ibrew install wget --dry-run  # show the plan only
+set -euo pipefail
+
+share="${IBREW_HOME:-$HOME/.local/share/ibrew}"
+config="${XDG_CONFIG_HOME:-$HOME/.config}/ibrew/repo"
+if [[ -z "${HOMEBREW_IBREW_REPO:-}" && -f "$config" ]]; then
+  HOMEBREW_IBREW_REPO="$(<"$config")"
+fi
+export HOMEBREW_IBREW_REPO # brew only passes HOMEBREW_* through
+
+case "${1:-}" in
+  install | upgrade | reinstall) ;;
+  *) exec brew "$@" ;;
+esac
+cmd="$1"
+shift
+
+names=()
+for arg in "$@"; do
+  case "$arg" in
+    -n | --dry-run) export HOMEBREW_IBREW_DRY_RUN=1 ;;
+    --formula | --formulae) ;;
+    -*)
+      # Casks and other flags (--cask, -s, --HEAD, ...) are brew's business.
+      echo "ibrew: passing '$cmd $*' straight to brew because of $arg" >&2
+      exec brew "$cmd" "$@"
+      ;;
+    *) names+=("$arg") ;;
+  esac
+done
+
+exec brew ruby "$share/bottler.rb" "$cmd" ${names[@]+"${names[@]}"}
