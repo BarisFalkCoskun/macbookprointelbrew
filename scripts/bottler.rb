@@ -263,9 +263,31 @@ def packages_txt
       .map { _1.sub(/#.*/, "").strip }.reject(&:empty?)
 end
 
+# Edits to homebrew/core formulae whose bottle build doesn't fit in one job.
+# llvm's bottle build compiles LLVM four times for PGO (a faster clang); a plain
+# source install compiles it once. Same features, slightly slower clang.
+FORMULA_EDITS = {
+  "llvm" => [/^(\s*)pgo_build = .*$/, '\1pgo_build = false'],
+}.freeze
+
+def edit_formula(name)
+  return unless FORMULA_EDITS.key?(name)
+
+  pattern, replacement = FORMULA_EDITS[name]
+  info = JSON.parse(read("brew", "info", "--json=v2", "--formula", name))["formulae"].first
+  path = File.join(read("brew", "--repository", info["tap"]).strip, info["ruby_source_path"])
+  source = File.read(path)
+  edited = source.sub(pattern, replacement)
+  return opoo "#{name}: formula changed upstream, building it unedited" if edited == source
+
+  ohai "#{name}: editing #{path} (#{edited[pattern].strip})"
+  File.write(path, edited)
+end
+
 def build_bottle(entry, index, timeout:)
   name = entry.name
   run!("brew", "uninstall", "--ignore-dependencies", "--force", name) if entry.installed
+  edit_formula(name)
   run!("brew", "install", "--build-bottle", name, timeout:)
   Dir.mktmpdir do |dir|
     Dir.chdir(dir) { run!("brew", "bottle", "--json", "--no-rebuild", name) }
