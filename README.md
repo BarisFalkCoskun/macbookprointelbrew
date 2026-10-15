@@ -1,53 +1,60 @@
 # Intel bottles for macOS 15
 
-Homebrew 7 stopped building bottles for Intel Macs, so on an Intel MacBook
-every formula update compiles from source. This repo builds those bottles
-on GitHub's Intel macOS 15 runners (`macos-15-intel`, free for public repos)
-and publishes them as assets on the `bottles` release. `ibrew` on the MacBook
-downloads and pours them instead of compiling.
+Homebrew 7 no longer ships prebuilt packages (bottles) for Intel Macs, so
+`brew` compiles everything. This repo builds them on GitHub's Intel runners
+instead, and `ibrew` on the MacBook installs them.
 
-- **Nightly**: `build-bottles.yml` rebuilds whatever in `packages.txt` (plus
-  dependencies) has no official or published bottle for Homebrew's current version.
-- **On demand**: `ibrew install foo` asks the workflow for missing bottles,
-  waits, then pours them.
-- Formulae that still have an official Intel bottle, casks, and third-party
-  taps are left to plain `brew`.
+## Cheat sheet
+
+| Instead of | Type | What happens |
+|---|---|---|
+| `brew install foo` | `ibrew install foo` | Installs a prebuilt bottle; if there's none yet, GitHub builds it and `ibrew` waits |
+| `brew upgrade` | `ibrew upgrade` | Same, for everything outdated (apps go to plain `brew`) |
+| `brew upgrade foo` | `ibrew upgrade foo` | Same, for one formula |
+| `brew reinstall foo` | `ibrew reinstall foo` | Same, even if it's up to date |
+| anything else | `brew …` or `ibrew …` | Identical (`ibrew` passes it to `brew`) |
+
+- **Preview:** add `--dry-run` to see the plan without changing anything.
+- **Don't use** plain `brew install`, `upgrade` or `reinstall`: they compile.
+  To keep typing `brew`: `echo 'alias brew=ibrew' >> ~/.zshrc`
+- **Other flags** (except `--cask`) send the command to plain `brew`, which may compile.
+- **First request can be slow:** big formulae (llvm, rust) take hours on
+  GitHub. Ctrl-C is safe; run the command again later.
+
+## How it works
+
+- **Nightly:** GitHub builds anything in `packages.txt` (plus dependencies)
+  that has a newer version than its bottle. Add a formula there and push to
+  keep it prebuilt.
+- **On demand:** `ibrew` checks what's outdated on the MacBook and asks GitHub
+  to build only what's missing.
+- Bottles and `index.json` (the list of them) live on the `bottles` release.
 
 ## Setup
 
-1. Create an empty **public** GitHub repo (e.g. `intel-bottles`) and push this
-   folder to its `main` branch. The first push starts a full build of
-   `packages.txt`. It takes many hours (llvm, rust, qt, ...) and continues
-   itself across runs; progress is on the repo's Actions tab.
-2. Create a fine-grained token: Settings → Developer settings → Fine-grained
-   tokens. Repository access: only this repo. Permissions: **Actions: Read and
-   write**. That's all it needs (downloads are public).
-3. On the MacBook:
+1. Push this repo to a **public** GitHub repo.
+2. Create a fine-grained token (Settings → Developer settings), for this repo
+   only, with **Actions: Read and write**.
+3. On the MacBook (the argument is the GitHub `owner/repo`, not your Mac username):
 
    ```sh
-   git clone https://github.com/<you>/intel-bottles && cd intel-bottles
-   client/setup.sh <you>/intel-bottles   # asks for the token, stores it in the Keychain
+   git clone https://github.com/BarisFalkCoskun/macbookprointelbrew && cd macbookprointelbrew
+   client/setup.sh BarisFalkCoskun/macbookprointelbrew   # stores the token in the Keychain
    ```
 
-## Usage
+**Updating `ibrew`:** `git pull`, then run `client/setup.sh …` again (it won't ask for the token).
+
+## Rebuild by hand
 
 ```sh
-ibrew upgrade                 # all outdated formulae (bottles from here) + casks
-ibrew install wget --dry-run  # show where each formula would come from
-ibrew install wget
-ibrew reinstall opencv
+gh workflow run build-bottles.yml -R BarisFalkCoskun/macbookprointelbrew               # nightly-style
+gh workflow run build-bottles.yml -R BarisFalkCoskun/macbookprointelbrew -f formulae="llvm rust"
 ```
 
-Any other command or flag goes straight to `brew`. Bottles are cached in
-`~/Library/Caches/ibrew`. Tuning (env vars): `HOMEBREW_IBREW_WAIT_MINUTES`
-(default 240) is how long `ibrew` waits for a remote build.
-
-To keep a new formula prebuilt every night, add it to `packages.txt` and push.
+Naming formulae also retries ones that failed before; the nightly-style run doesn't.
 
 ## Limits
 
-- `macos-15-intel` runners end in August 2027, and Homebrew drops Intel
-  entirely on 1 September 2027. After that, MacPorts still supports Intel Macs.
-- A single build that takes more than ~5.5 h is stopped and recorded as failed
-  in `index.json`. Nightly runs won't retry it at the same version, but
-  requesting it by name (`ibrew install`, or *Run workflow* with its name) will.
+- GitHub's Intel runners end in August 2027; Homebrew drops Intel on
+  1 September 2027. After that, use MacPorts.
+- A build that takes more than ~5.5 h is stopped and marked as failed.
