@@ -247,9 +247,12 @@ def pour(entry, index)
     end
   end
   verb = entry.installed == rec["pkg_version"] ? "reinstall" : "install"
-  # Stops brew from rebuilding dependents from source after a library upgrade;
-  # outdated dependents get their own bottles from this plan instead.
-  run!("brew", verb, path, env: { "HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK" => "1" })
+  # NO_INSTALLED_DEPENDENTS_CHECK stops brew from rebuilding dependents from
+  # source after a library upgrade; outdated dependents get their own bottles
+  # from this plan instead. DEVELOPER: since Homebrew 4.6, `brew install <file>`
+  # only works in developer mode. As an env var for this one command it doesn't
+  # turn developer mode on for good the way `brew ruby` does.
+  run!("brew", verb, path, env: { "HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK" => "1", "HOMEBREW_DEVELOPER" => "1" })
   entry.installed = rec["pkg_version"]
 end
 
