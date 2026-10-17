@@ -69,6 +69,16 @@ end
 
 def newer_or_equal?(a, b) = compare_pkg_versions(a, b) >= 0
 
+# Is our published bottle `rec` at least the version `entry` wants? Homebrew
+# compares version_scheme first: a formula bumps it when its version goes
+# backwards (openssl@3 moving from 3.6.x to the 3.5 LTS line).
+def bottle_current?(rec, entry)
+  return false unless rec
+
+  scheme = rec["version_scheme"].to_i
+  scheme == entry.scheme ? newer_or_equal?(rec["pkg_version"], entry.wanted) : scheme > entry.scheme
+end
+
 TAG = ENV.fetch("HOMEBREW_BOTTLER_TAG", "sequoia")
 # Bottles built for an older macOS still pour on Sequoia; "all" is arch-independent.
 COMPATIBLE_TAGS = ENV.fetch("HOMEBREW_BOTTLER_COMPATIBLE_TAGS", "all,sequoia,sonoma,ventura,monterey,big_sur").split(",").freeze
@@ -94,7 +104,7 @@ ENV["GH_TOKEN"] ||= ENV["HOMEBREW_GITHUB_API_TOKEN"] if ENV["HOMEBREW_GITHUB_API
 #         :ours     our release has a bottle at (at least) Homebrew's version
 #         :stale    our release has a bottle, but an older version
 #         :missing  no bottle anywhere
-Entry = Struct.new(:name, :status, :wanted, :ours, :installed, :target, keyword_init: true)
+Entry = Struct.new(:name, :status, :wanted, :scheme, :ours, :installed, :target, keyword_init: true)
 
 def run!(*cmd, env: {}, timeout: nil)
   ohai cmd.join(" ")
@@ -182,18 +192,21 @@ end
 # On the runner (client: false) only "is there a pourable bottle?" matters;
 # on the MacBook an up-to-date installed keg means there is nothing to do.
 def classify(info, index, client:, force: false)
-  wanted = pkg_version(info)
-  installed = info["installed"].map { _1["version"] }.max { |a, b| compare_pkg_versions(a, b) }
-  ours = index.dig("bottles", info["name"], "pkg_version")
-  status =
-    if client && !force && installed && newer_or_equal?(installed, wanted) then :current
+  rec = index.dig("bottles", info["name"])
+  entry = Entry.new(
+    name: info["name"], wanted: pkg_version(info), scheme: info["version_scheme"].to_i, ours: rec&.fetch("pkg_version"),
+    installed: info["installed"].map { _1["version"] }.max { |a, b| compare_pkg_versions(a, b) }, target: false
+  )
+  entry.status =
+    # brew's own "outdated" knows about version_scheme, which the installed list doesn't carry.
+    if client && !force && entry.installed && !info["outdated"] then :current
     elsif info["tap"] != "homebrew/core" then :external
     elsif official_bottle?(info) then :official
-    elsif ours && newer_or_equal?(ours, wanted) then :ours
-    elsif ours then :stale
+    elsif bottle_current?(rec, entry) then :ours
+    elsif rec then :stale
     else :missing
     end
-  Entry.new(name: info["name"], status:, wanted:, ours:, installed:, target: false)
+  entry
 end
 
 # Entries for `targets` and everything they need, dependencies first. On the
@@ -288,7 +301,9 @@ def build_bottle(entry, index, timeout:)
   name = entry.name
   run!("brew", "uninstall", "--ignore-dependencies", "--force", name) if entry.installed
   edit_formula(name)
-  run!("brew", "install", "--build-bottle", name, timeout:)
+  # --overwrite: the runner image ships its own copies of some tools (e.g.
+  # /usr/local/bin/vcpkg), which would otherwise make `brew link` fail.
+  run!("brew", "install", "--build-bottle", "--overwrite", name, timeout:)
   Dir.mktmpdir do |dir|
     Dir.chdir(dir) { run!("brew", "bottle", "--json", "--no-rebuild", name) }
     json = Dir["#{dir}/*.bottle.json"].first or raise "brew bottle wrote no JSON"
@@ -303,11 +318,12 @@ def build_bottle(entry, index, timeout:)
 
     old = index.dig("bottles", name, "asset")
     index["bottles"][name] = {
-      "pkg_version" => data.dig("formula", "pkg_version") || entry.wanted,
-      "filename"    => filename,
-      "asset"       => asset,
-      "sha256"      => bottle["sha256"],
-      "built_at"    => Time.now.utc.iso8601,
+      "pkg_version"    => data.dig("formula", "pkg_version") || entry.wanted,
+      "version_scheme" => entry.scheme,
+      "filename"       => filename,
+      "asset"          => asset,
+      "sha256"         => bottle["sha256"],
+      "built_at"       => Time.now.utc.iso8601,
     }
     index["failed"].delete(name)
     publish_index(index)
@@ -441,7 +457,7 @@ def wait_for_bottles(entries)
   loop do
     sleep 60
     index = fetch_index
-    remaining = entries.reject { |e| (v = index.dig("bottles", e.name, "pkg_version")) && newer_or_equal?(v, e.wanted) }
+    remaining = entries.reject { |e| bottle_current?(index.dig("bottles", e.name), e) }
     # Stop waiting for anything whose build failed after we asked for it.
     failed, remaining = remaining.partition do |e|
       (f = index.dig("failed", e.name)) && Time.parse(f["at"]) > requested_at
@@ -530,7 +546,7 @@ def client(command, names)
       if decision == :skip then "skipped by choose_source"
       elsif blocked.any? then "needs #{blocked.join(", ")}"
       elsif rec.nil? then "no bottle published"
-      elsif decision == :remote && !newer_or_equal?(rec["pkg_version"], entry.wanted) then "remote build missing"
+      elsif decision == :remote && !bottle_current?(rec, entry) then "remote build missing"
       end
     if reason
       opoo "#{entry.name}: not installed (#{reason})"
