@@ -93,7 +93,9 @@ STARTED = Time.now
 ENV["PATH"] = ENV["HOMEBREW_PATH"] if ENV["HOMEBREW_PATH"]
 ENV["HOMEBREW_NO_ENV_HINTS"] = "1"
 
-REPO = ENV["HOMEBREW_IBREW_REPO"] || odie("HOMEBREW_IBREW_REPO is not set (expected owner/repo)")
+# An empty value is truthy in Ruby, so check the shape rather than nil.
+REPO = ENV["HOMEBREW_IBREW_REPO"].to_s.strip
+odie "HOMEBREW_IBREW_REPO is #{REPO.empty? ? "not set" : "'#{REPO}'"} (expected owner/repo)" unless REPO.match?(%r{\A[\w.-]+/[\w.-]+\z})
 # brew strips GH_* and *TOKEN* variables; hand gh what it needs on the runner.
 ENV["GH_REPO"] = REPO
 ENV["GH_TOKEN"] ||= ENV["HOMEBREW_GITHUB_API_TOKEN"] if ENV["HOMEBREW_GITHUB_API_TOKEN"]
