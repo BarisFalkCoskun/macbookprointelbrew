@@ -142,7 +142,9 @@ def asset_url(asset) = "https://github.com/#{REPO}/releases/download/#{RELEASE}/
 def fetch_index
   data = Dir.mktmpdir do |dir|
     path = File.join(dir, "index.json")
-    code = read("curl", "-sSL", "-o", path, "-w", "%{http_code}", "#{asset_url("index.json")}?t=#{Time.now.to_i}")
+    # Without -f, HTTP errors aren't curl errors, so --retry-all-errors only retries network failures.
+    code = read("curl", "-sSL", "--retry", "5", "--retry-delay", "20", "--retry-all-errors",
+                "-o", path, "-w", "%{http_code}", "#{asset_url("index.json")}?t=#{Time.now.to_i}")
     if code == "200" then JSON.parse(File.read(path))
     elsif code == "404" then {} # nothing published yet
     else raise "could not download index.json from #{REPO} (HTTP #{code})"
@@ -255,7 +257,9 @@ def pour(entry, index)
   FileUtils.mkdir_p(CACHE)
   path = File.join(CACHE, rec["filename"])
   unless File.exist?(path) && Digest::SHA256.file(path).hexdigest == rec["sha256"]
-    run!("curl", "-fL", "--retry", "3", "-o", path, asset_url(rec["asset"]))
+    # Keep retrying for ~2 min: a runner DNS outage outlasted --retry 3's default ~7 s backoff.
+    # --retry-all-errors also covers dropped connections (exit 7/56), which --retry gives up on.
+    run!("curl", "-fL", "--retry", "5", "--retry-delay", "20", "--retry-all-errors", "-o", path, asset_url(rec["asset"]))
     unless Digest::SHA256.file(path).hexdigest == rec["sha256"]
       FileUtils.rm_f(path)
       raise "checksum mismatch for #{rec["asset"]}"

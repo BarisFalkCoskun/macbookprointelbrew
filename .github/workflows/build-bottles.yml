@@ -49,7 +49,13 @@ jobs:
 
       - name: Prepare Homebrew
         run: |
-          brew update
+          # Fetching the core/cask taps over git sometimes times out on the runner.
+          for attempt in 1 2 3; do
+            brew update && break
+            test "$attempt" -lt 3 || exit 1
+            echo "brew update failed (attempt $attempt); retrying in 60 s"
+            sleep 60
+          done
           brew tap --force homebrew/core
 
       - name: Ensure the bottles release exists
